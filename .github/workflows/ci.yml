@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  calidad:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oppu
+          POSTGRES_PASSWORD: oppu
+          POSTGRES_DB: oppu
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U oppu" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://oppu:oppu@localhost:5432/oppu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Lint y formato
+        run: |
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+      - name: Migraciones al día
+        run: uv run --locked python manage.py makemigrations --check --dry-run
+      - name: Pruebas (PostgreSQL 16)
+        run: uv run --locked pytest
+      - name: Chequeo de seguridad de producción
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.prod
+          SECRET_KEY: ci-solo-para-check-deploy-0123456789-abcdefghijklmnopqrstuvwxyz
+          ALLOWED_HOSTS: oppu.example.com
+          ADMIN_URL: gestion-ci/
+        run: uv run --locked python manage.py check --deploy --fail-level WARNING
+      - name: CSS compilado al día
+        run: |
+          uv run --locked python scripts/tailwind.py
+          git diff --exit-code static/css/app.css
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t oppu .

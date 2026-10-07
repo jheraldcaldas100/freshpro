@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.venv
+db.sqlite3
+staticfiles
+bin
+node_modules
+**/__pycache__
+.pytest_cache
+.ruff_cache
+docs
+tests
+analisis
