@@ -1,2 +1,4 @@
 @import "tailwindcss" source(none);
 @source "../templates";
+/* El admin de Django tiene sus propios estilos: sus plantillas no usan Tailwind. */
+@source not "../templates/admin";
