@@ -136,3 +136,66 @@ def test_respuestas_se_cierran():
 def test_url_configurada(settings, url, valida):
     settings.HOJA_CSV_URL = url
     assert (origen_hoja.url_configurada() is not None) is valida
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://docs.google.com:abc/spreadsheets/d/e/x/pub?output=csv",
+        "https://[::1/spreadsheets/d/e/x/pub?output=csv",
+    ],
+)
+def test_url_malformada_no_rompe(settings, url):
+    settings.HOJA_CSV_URL = url
+    assert origen_hoja.url_configurada() is None
+
+
+def test_respuesta_real_lenta_respeta_el_presupuesto():
+    """Servidor HTTP local que envía 1 byte cada 0,2 s: la lectura debe cortarse a tiempo."""
+    import http.client
+    import socket
+    import threading
+    import time
+
+    servidor = socket.socket()
+    servidor.bind(("127.0.0.1", 0))
+    servidor.listen(1)
+    puerto = servidor.getsockname()[1]
+    detener = threading.Event()
+
+    def atender():
+        conexion, _ = servidor.accept()
+        conexion.recv(4096)
+        conexion.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\n\r\n"
+        )
+        while not detener.is_set():
+            try:
+                conexion.sendall(b"x")
+            except OSError:
+                break
+            time.sleep(0.2)
+        conexion.close()
+
+    hilo = threading.Thread(target=atender, daemon=True)
+    hilo.start()
+    try:
+        conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=5)
+        conexion.request("GET", "/")
+        respuesta = origen_hoja.RespuestaHttps(conexion)
+        limite = time.monotonic() + 1.0
+
+        def restante():
+            segundos = limite - time.monotonic()
+            if segundos <= 0:
+                raise ErrorHoja("La hoja tardó más de 15 segundos en responder.")
+            return segundos
+
+        inicio = time.monotonic()
+        with pytest.raises(ErrorHoja, match="15 segundos"):
+            origen_hoja._leer_con_limites(respuesta, restante)
+        assert time.monotonic() - inicio < 2.0
+        respuesta.close()
+    finally:
+        detener.set()
+        servidor.close()

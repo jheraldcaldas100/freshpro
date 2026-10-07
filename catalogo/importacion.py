@@ -80,6 +80,7 @@ LONGITUD_MAXIMA = {
     "resumen_1": 120,
     "resumen_2": 120,
     "resumen_3": 120,
+    "requisitos": 5000,
 }
 OBLIGATORIOS = ["titulo", "organizacion", "resumen_1", "resumen_2", "resumen_3", "requisitos"]
 
@@ -149,15 +150,22 @@ def _leer(contenido: bytes, reporte: Reporte) -> list[tuple[int, dict]]:
     if reporte.errores_generales:
         return []
     filas = []
-    for numero, celdas in enumerate(lector, start=2):
-        if not any(c.strip() for c in celdas):
-            continue
-        if len(celdas) != len(encabezados):
-            reporte.errores.append(
-                f"Fila {numero}: tiene {len(celdas)} celdas y se esperaban {len(encabezados)}."
-            )
-            continue
-        filas.append((numero, dict(zip(encabezados, (c.strip() for c in celdas), strict=True))))
+    try:
+        for numero, celdas in enumerate(lector, start=2):
+            if not any(c.strip() for c in celdas):
+                continue
+            if len(celdas) != len(encabezados):
+                reporte.errores.append(
+                    f"Fila {numero}: tiene {len(celdas)} celdas y se esperaban {len(encabezados)}."
+                )
+                continue
+            filas.append((numero, dict(zip(encabezados, (c.strip() for c in celdas), strict=True))))
+    except csv.Error as exc:
+        reporte.errores_generales.append(
+            f"No se pudo leer el CSV cerca de la fila {lector.line_num} ({exc}). "
+            "Revisa que no haya una celda enorme o comillas sin cerrar."
+        )
+        return []
     if not filas and not reporte.errores:
         reporte.errores_generales.append("El archivo no tiene filas con datos.")
     return filas
@@ -186,7 +194,7 @@ def _validar_fila(numero: int, fila: dict, catalogos: dict) -> tuple[FilaValida 
     for campo in OBLIGATORIOS:
         if not fila[campo]:
             error(campo, "es obligatorio.")
-        elif len(fila[campo]) > LONGITUD_MAXIMA.get(campo, 10_000):
+        elif len(fila[campo]) > LONGITUD_MAXIMA[campo]:
             error(campo, f"tiene más de {LONGITUD_MAXIMA[campo]} caracteres.")
         else:
             campos[campo] = fila[campo]
@@ -264,7 +272,7 @@ def _validar_fila(numero: int, fila: dict, catalogos: dict) -> tuple[FilaValida 
     if not errores:
         provisional = Oportunidad(codigo=codigo, **campos)
         try:
-            provisional.full_clean(exclude=["codigo"], validate_unique=False)
+            provisional.full_clean(validate_unique=False)
         except ValidationError as exc:
             for campo, mensajes in exc.message_dict.items():
                 for mensaje in mensajes:
@@ -319,12 +327,6 @@ def importar(contenido: bytes, confirmar: bool = False) -> Reporte:
     if not reporte.ok:
         return reporte
 
-    existentes = {
-        o.codigo: o
-        for o in Oportunidad.objects.filter(
-            codigo__in=[f.codigo for f in validas]
-        ).prefetch_related("carreras", "intereses")
-    }
     presentes = {f.codigo for f in validas}
     reporte.no_presentes = list(
         Oportunidad.objects.exclude(codigo__in=presentes)
@@ -333,6 +335,13 @@ def importar(contenido: bytes, confirmar: bool = False) -> Reporte:
     )
 
     with transaction.atomic():
+        # Al confirmar, las filas existentes se bloquean dentro de la transacción y solo se
+        # escriben los campos de contenido: un cambio de estado hecho en paralelo desde el
+        # admin no se pisa.
+        consulta = Oportunidad.objects.filter(codigo__in=presentes)
+        if confirmar:
+            consulta = consulta.select_for_update()
+        existentes = {o.codigo: o for o in consulta.prefetch_related("carreras", "intereses")}
         for fila in validas:
             oportunidad = existentes.get(fila.codigo)
             if oportunidad is None:
@@ -349,10 +358,12 @@ def importar(contenido: bytes, confirmar: bool = False) -> Reporte:
             for campo, valor in fila.campos.items():
                 setattr(oportunidad, campo, valor)
             reporte.actualizadas.append(fila.codigo)
+            campos_a_guardar = [*fila.campos, "actualizado_at"]
             if invalidar_si_cambio_sensible(oportunidad, anteriores):
                 reporte.reverificar.append(fila.codigo)
+                campos_a_guardar += ["estado", "verificado_at"]
             if confirmar:
-                oportunidad.save()
+                oportunidad.save(update_fields=campos_a_guardar)
                 oportunidad.carreras.set(fila.carreras)
                 oportunidad.intereses.set(fila.intereses)
     reporte.aplicado = confirmar

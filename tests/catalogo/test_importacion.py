@@ -1,5 +1,6 @@
 from datetime import timedelta
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from django.core.management import call_command
@@ -170,3 +171,41 @@ def test_comando(tmp_path, capsys):
     assert Oportunidad.objects.count() == 0
     call_command("importar_convocatorias", str(archivo))
     assert Oportunidad.objects.count() == 1
+
+
+@pytest.mark.parametrize(("codigo", "fragmento"), [("BAD CODE", "codigo"), ("X" * 31, "codigo")])
+def test_codigo_invalido_se_rechaza_en_la_vista_previa(codigo, fragmento):
+    reporte = importar(csv_de([fila(codigo=codigo)]), confirmar=True)
+    assert not reporte.ok
+    assert any(fragmento in e for e in reporte.errores)
+    assert Oportunidad.objects.count() == 0
+
+
+def test_requisitos_demasiado_largos_dan_error_de_fila():
+    reporte = importar(csv_de([fila(requisitos="x" * 5001)]))
+    assert any("requisitos" in e and "5000" in e for e in reporte.errores)
+
+
+def test_celda_enorme_da_error_general_y_no_500():
+    reporte = importar(csv_de([fila(requisitos="x" * 140_000)]))
+    assert not reporte.ok
+    assert any("No se pudo leer el CSV" in e for e in reporte.errores_generales)
+
+
+def test_importacion_no_pisa_un_cambio_de_estado_paralelo():
+    importar(csv_de([fila()]), confirmar=True)
+    Oportunidad.objects.update(verificado_at=timezone.now(), estado="publicada")
+    from catalogo import importacion
+
+    original = importacion._sin_cambios
+
+    def editor_paralelo(oportunidad, f):
+        # Otro editor cierra la oportunidad justo después de que la importación la leyó.
+        Oportunidad.objects.filter(pk=oportunidad.pk).update(estado="cerrada")
+        return original(oportunidad, f)
+
+    with mock.patch.object(importacion, "_sin_cambios", editor_paralelo):
+        importar(csv_de([fila(titulo="Solo cambia el título")]), confirmar=True)
+    beca = Oportunidad.objects.get()
+    assert beca.titulo == "Solo cambia el título"
+    assert beca.estado == "cerrada"

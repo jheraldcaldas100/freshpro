@@ -20,6 +20,7 @@ PRESUPUESTO_SEGUNDOS = 15.0
 MAX_REDIRECCIONES = 3
 BLOQUE = 64 * 1024
 CODIGOS_REDIRECCION = {301, 302, 303, 307, 308}
+MENSAJE_TIEMPO = "La hoja tardó más de 15 segundos en responder. Intenta de nuevo."
 
 
 class ErrorHoja(Exception):
@@ -40,10 +41,17 @@ Transporte = Callable[[str, float], Respuesta]
 
 
 def url_permitida(url: str) -> bool:
-    partes = urlsplit(url)
+    try:
+        partes = urlsplit(url)
+    except ValueError:
+        return False
     if partes.scheme != "https" or partes.username or partes.password:
         return False
-    if partes.port not in (None, 443):
+    try:
+        puerto = partes.port
+    except ValueError:
+        return False
+    if puerto not in (None, 443):
         return False
     host = (partes.hostname or "").lower()
     return host == HOST_HOJA or host.endswith(SUFIJO_CONTENIDO)
@@ -52,7 +60,7 @@ def url_permitida(url: str) -> bool:
 def es_url_de_hoja_publicada(url: str) -> bool:
     if not url_permitida(url):
         return False
-    partes = urlsplit(url)
+    partes = urlsplit(url)  # ya validada por url_permitida
     return (
         (partes.hostname or "").lower() == HOST_HOJA
         and partes.path.startswith("/spreadsheets/d/e/")
@@ -68,7 +76,7 @@ def url_configurada() -> str | None:
 class RespuestaHttps:
     """Respuesta de http.client cuyo tiempo de espera se ajusta en cada lectura."""
 
-    def __init__(self, conexion: http.client.HTTPSConnection):
+    def __init__(self, conexion: http.client.HTTPConnection):
         self._conexion = conexion
         self._respuesta = conexion.getresponse()
         self.status = self._respuesta.status
@@ -79,7 +87,9 @@ class RespuestaHttps:
     def read(self, cantidad: int, tiempo_restante: float) -> bytes:
         if self._conexion.sock is not None:
             self._conexion.sock.settimeout(tiempo_restante)
-        return self._respuesta.read(cantidad)
+        # read1 hace como mucho una recepción del socket: así el plazo se vuelve a
+        # comprobar entre recepciones y una respuesta lenta no lo puede superar.
+        return self._respuesta.read1(cantidad)
 
     def close(self) -> None:
         self._respuesta.close()
@@ -106,7 +116,7 @@ def descargar(
     def restante() -> float:
         segundos = limite - reloj()
         if segundos <= 0:
-            raise ErrorHoja("La hoja tardó más de 15 segundos en responder. Intenta de nuevo.")
+            raise ErrorHoja(MENSAJE_TIEMPO)
         return segundos
 
     actual = url
@@ -124,7 +134,10 @@ def descargar(
                 destino = respuesta.getheader("Location")
                 if not destino:
                     raise ErrorHoja("Google respondió una redirección sin destino.")
-                actual = urljoin(actual, destino)
+                try:
+                    actual = urljoin(actual, destino)
+                except ValueError as exc:
+                    raise ErrorHoja("Google respondió una redirección inválida.") from exc
                 continue
             if respuesta.status != 200:
                 raise ErrorHoja(f"Google Sheets respondió con el error {respuesta.status}.")
@@ -148,6 +161,8 @@ def _leer_con_limites(respuesta: Respuesta, restante: Callable[[], float]) -> by
     while True:
         try:
             bloque = respuesta.read(BLOQUE, restante())
+        except TimeoutError as exc:
+            raise ErrorHoja(MENSAJE_TIEMPO) from exc
         except (OSError, http.client.HTTPException) as exc:
             raise ErrorHoja(f"Se cortó la descarga de la hoja ({exc}).") from exc
         if not bloque:

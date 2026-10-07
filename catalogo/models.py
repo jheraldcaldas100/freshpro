@@ -137,6 +137,9 @@ class Oportunidad(models.Model):
         super().save(*args, **kwargs)
 
     def clean(self) -> None:
+        # Se normaliza aquí (antes de validar unicidad) para que "bec-1" choque con "BEC-1"
+        # como error de formulario y no como error de base de datos.
+        self.codigo = (self.codigo or "").strip().upper()
         errores = {}
         if self.ciclo_min and self.ciclo_max and self.ciclo_min > self.ciclo_max:
             errores["ciclo_max"] = "El ciclo máximo no puede ser menor que el mínimo."

@@ -84,3 +84,30 @@ def test_verificacion_vencida(crear_oportunidad):
     assert not oportunidad.verificacion_vencida()
     oportunidad.verificado_at = timezone.now() - timedelta(days=8)
     assert oportunidad.verificacion_vencida()
+
+
+def test_codigo_en_minusculas_choca_como_error_de_formulario(crear_oportunidad):
+    from catalogo.forms import OportunidadAdminForm
+
+    crear_oportunidad(codigo="BEC-2026-050", todas_carreras=True)
+    datos = {
+        "codigo": "bec-2026-050",
+        "titulo": "t",
+        "organizacion": "o",
+        "tipo": "beca",
+        "todas_carreras": "on",
+        "ciclo_min": 1,
+        "ciclo_max": 12,
+        "fecha_cierre": date.today().isoformat(),
+        "resumen_1": "a",
+        "resumen_2": "b",
+        "resumen_3": "c",
+        "requisitos": "r",
+        "link_postulacion": "https://example.com/a",
+        "fuente_url": "https://example.com/b",
+        "frecuencia": "anual",
+        "estado": "borrador",
+    }
+    form = OportunidadAdminForm(data=datos)
+    assert not form.is_valid()
+    assert "codigo" in form.errors
