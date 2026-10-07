@@ -209,3 +209,9 @@ def test_importacion_no_pisa_un_cambio_de_estado_paralelo():
     beca = Oportunidad.objects.get()
     assert beca.titulo == "Solo cambia el título"
     assert beca.estado == "cerrada"
+
+
+def test_celda_enorme_en_encabezados_no_da_500():
+    contenido = ("x" * 140_000 + "," + ",".join(COLUMNAS) + "\n").encode()
+    reporte = importar(contenido)
+    assert any("encabezados" in e for e in reporte.errores_generales)

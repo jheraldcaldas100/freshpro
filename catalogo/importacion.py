@@ -135,6 +135,11 @@ def _leer(contenido: bytes, reporte: Reporte) -> list[tuple[int, dict]]:
     except StopIteration:
         reporte.errores_generales.append("El archivo está vacío.")
         return []
+    except csv.Error as exc:
+        reporte.errores_generales.append(
+            f"No se pudo leer la fila de encabezados ({exc}). Revisa la primera fila de la hoja."
+        )
+        return []
     repetidos = sorted({h for h in encabezados if encabezados.count(h) > 1})
     faltantes = [c for c in COLUMNAS if c not in encabezados]
     sobrantes = [h for h in encabezados if h and h not in COLUMNAS]

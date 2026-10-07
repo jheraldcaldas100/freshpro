@@ -150,9 +150,8 @@ def test_url_malformada_no_rompe(settings, url):
     assert origen_hoja.url_configurada() is None
 
 
-def test_respuesta_real_lenta_respeta_el_presupuesto():
-    """Servidor HTTP local que envía 1 byte cada 0,2 s: la lectura debe cortarse a tiempo."""
-    import http.client
+def _servidor_lento(cabecera: bytes, goteo: bytes):
+    """Servidor HTTP local: envía `cabecera` y luego `goteo` de a 1 byte cada 0,2 s."""
     import socket
     import threading
     import time
@@ -160,42 +159,67 @@ def test_respuesta_real_lenta_respeta_el_presupuesto():
     servidor = socket.socket()
     servidor.bind(("127.0.0.1", 0))
     servidor.listen(1)
-    puerto = servidor.getsockname()[1]
     detener = threading.Event()
 
     def atender():
         conexion, _ = servidor.accept()
         conexion.recv(4096)
-        conexion.sendall(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\n\r\n"
-        )
-        while not detener.is_set():
-            try:
-                conexion.sendall(b"x")
-            except OSError:
-                break
-            time.sleep(0.2)
+        try:
+            conexion.sendall(cabecera)
+            for byte in goteo:
+                if detener.is_set():
+                    break
+                conexion.sendall(bytes([byte]))
+                time.sleep(0.2)
+        except OSError:
+            pass
         conexion.close()
 
-    hilo = threading.Thread(target=atender, daemon=True)
-    hilo.start()
+    threading.Thread(target=atender, daemon=True).start()
+    return servidor, detener
+
+
+CABECERA_LARGO = b"HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: 1000\r\n\r\n"
+CABECERA_CHUNKED = (
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("cabecera", "goteo"),
+    [
+        (CABECERA_LARGO, b"x" * 1000),
+        # Fin de chunks y trailers que llegan muy lento: http.client los lee por dentro.
+        (CABECERA_CHUNKED, b"0\r\nX-Trailer: " + b"y" * 200 + b"\r\n\r\n"),
+    ],
+)
+def test_respuesta_real_lenta_respeta_el_presupuesto(cabecera, goteo):
+    import http.client
+    import time
+
+    servidor, detener = _servidor_lento(cabecera, goteo)
     try:
-        conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=5)
-        conexion.request("GET", "/")
-        respuesta = origen_hoja.RespuestaHttps(conexion)
-        limite = time.monotonic() + 1.0
+        puerto = servidor.getsockname()[1]
+        inicio = time.monotonic()
+        limite = inicio + 1.0
 
         def restante():
             segundos = limite - time.monotonic()
             if segundos <= 0:
-                raise ErrorHoja("La hoja tardó más de 15 segundos en responder.")
+                raise ErrorHoja(origen_hoja.MENSAJE_TIEMPO)
             return segundos
 
-        inicio = time.monotonic()
+        conexion = http.client.HTTPConnection("127.0.0.1", puerto, timeout=5)
+        respuesta = origen_hoja.RespuestaHttps(conexion, restante(), "/")
         with pytest.raises(ErrorHoja, match="15 segundos"):
             origen_hoja._leer_con_limites(respuesta, restante)
-        assert time.monotonic() - inicio < 2.0
         respuesta.close()
+        assert time.monotonic() - inicio < 2.0
     finally:
         detener.set()
         servidor.close()
+
+
+def test_url_no_ascii_no_rompe(settings):
+    settings.HOJA_CSV_URL = "https://docs.google.com/spreadsheets/d/e/ñ/pub?output=csv"
+    assert origen_hoja.url_configurada() is None

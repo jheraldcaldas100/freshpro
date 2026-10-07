@@ -5,6 +5,8 @@ antes de pedirla, la lectura se corta a los 2 MB y toda la descarga tiene 15 s e
 """
 
 import http.client
+import socket
+import threading
 import time
 from collections.abc import Callable
 from typing import Protocol
@@ -41,6 +43,8 @@ Transporte = Callable[[str, float], Respuesta]
 
 
 def url_permitida(url: str) -> bool:
+    if not url.isascii():
+        return False
     try:
         partes = urlsplit(url)
     except ValueError:
@@ -74,12 +78,35 @@ def url_configurada() -> str | None:
 
 
 class RespuestaHttps:
-    """Respuesta de http.client cuyo tiempo de espera se ajusta en cada lectura."""
+    """Respuesta de http.client con un plazo máximo garantizado.
 
-    def __init__(self, conexion: http.client.HTTPConnection):
+    Un temporizador cierra el socket cuando se acaba el tiempo, sin importar cuántas
+    recepciones haga http.client por dentro (respuestas `chunked`, trailers, etc.).
+    """
+
+    def __init__(self, conexion: http.client.HTTPConnection, tiempo_restante: float, ruta: str):
         self._conexion = conexion
-        self._respuesta = conexion.getresponse()
+        self._vencido = threading.Event()
+        self._temporizador = threading.Timer(tiempo_restante, self._abortar)
+        self._temporizador.daemon = True
+        self._temporizador.start()
+        try:
+            conexion.request("GET", ruta, headers={"User-Agent": "Oppu/1.0"})
+            self._respuesta = conexion.getresponse()
+        except OSError as exc:
+            self.close()
+            if self._vencido.is_set():
+                raise TimeoutError from exc
+            raise
         self.status = self._respuesta.status
+
+    def _abortar(self) -> None:
+        self._vencido.set()
+        if self._conexion.sock is not None:
+            try:
+                self._conexion.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def getheader(self, nombre: str, default: str | None = None) -> str | None:
         return self._respuesta.getheader(nombre, default)
@@ -87,12 +114,20 @@ class RespuestaHttps:
     def read(self, cantidad: int, tiempo_restante: float) -> bytes:
         if self._conexion.sock is not None:
             self._conexion.sock.settimeout(tiempo_restante)
-        # read1 hace como mucho una recepción del socket: así el plazo se vuelve a
-        # comprobar entre recepciones y una respuesta lenta no lo puede superar.
-        return self._respuesta.read1(cantidad)
+        try:
+            datos = self._respuesta.read1(cantidad)
+        except (OSError, http.client.HTTPException) as exc:
+            if self._vencido.is_set():
+                raise TimeoutError from exc
+            raise
+        if self._vencido.is_set():
+            raise TimeoutError
+        return datos
 
     def close(self) -> None:
-        self._respuesta.close()
+        self._temporizador.cancel()
+        if getattr(self, "_respuesta", None) is not None:
+            self._respuesta.close()
         self._conexion.close()
 
 
@@ -102,8 +137,7 @@ def transporte_https(url: str, tiempo_restante: float) -> Respuesta:
     ruta = partes.path or "/"
     if partes.query:
         ruta += f"?{partes.query}"
-    conexion.request("GET", ruta, headers={"User-Agent": "Oppu/1.0"})
-    return RespuestaHttps(conexion)
+    return RespuestaHttps(conexion, tiempo_restante, ruta)
 
 
 def descargar(
@@ -127,6 +161,8 @@ def descargar(
             respuesta = transporte(actual, restante())
         except ErrorHoja:
             raise
+        except TimeoutError as exc:
+            raise ErrorHoja(MENSAJE_TIEMPO) from exc
         except (OSError, http.client.HTTPException) as exc:
             raise ErrorHoja(f"No se pudo conectar con Google Sheets ({exc}).") from exc
         try:
@@ -166,6 +202,7 @@ def _leer_con_limites(respuesta: Respuesta, restante: Callable[[], float]) -> by
         except (OSError, http.client.HTTPException) as exc:
             raise ErrorHoja(f"Se cortó la descarga de la hoja ({exc}).") from exc
         if not bloque:
+            restante()  # el final de la respuesta también debe llegar a tiempo
             return b"".join(partes)
         total += len(bloque)
         if total > TAMANO_MAXIMO:
