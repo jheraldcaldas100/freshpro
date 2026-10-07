@@ -16,3 +16,5 @@ services:
         sync: false
       - key: ADMIN_URL
         sync: false
+      - key: HOJA_CSV_URL
+        sync: false

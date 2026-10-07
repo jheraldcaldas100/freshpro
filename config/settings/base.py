@@ -25,6 +25,9 @@ def normalizar_ruta_admin(valor: str) -> str:
 
 ADMIN_URL = normalizar_ruta_admin(os.environ.get("ADMIN_URL", "admin/"))
 
+# Link de la Google Sheet publicada como CSV (Archivo → Compartir → Publicar en la web).
+HOJA_CSV_URL = os.environ.get("HOJA_CSV_URL", "").strip()
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

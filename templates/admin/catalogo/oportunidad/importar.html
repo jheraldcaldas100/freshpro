@@ -1,0 +1,66 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">Inicio</a>
+  &rsaquo; <a href="{% url 'admin:catalogo_oportunidad_changelist' %}">Oportunidades</a>
+  &rsaquo; Importar
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  {% if reporte %}
+    <h2>Vista previa {% if origen == "hoja" %}de la hoja{% else %}del archivo{% endif %}</h2>
+    {% if origen == "hoja" %}
+      <p>Descargada a las {{ descargado_at|time:"H:i" }}. Es la hora de la descarga, no la de la última
+      edición de la hoja: si no ves un cambio reciente, revisa que la hoja tenga activado
+      "Volver a publicar automáticamente", espera 5 minutos y sincroniza otra vez.</p>
+    {% endif %}
+
+    {% if reporte.errores_generales or reporte.errores %}
+      <p class="errornote">No se importará nada hasta corregir estos errores en la hoja:</p>
+      <ul>
+        {% for e in reporte.errores_generales %}<li>{{ e }}</li>{% endfor %}
+        {% for e in reporte.errores %}<li>{{ e }}</li>{% endfor %}
+      </ul>
+    {% else %}
+      <table>
+        <tr><th>Se crearán</th><td>{{ reporte.creadas|length }}</td><td>{{ reporte.creadas|join:", " }}</td></tr>
+        <tr><th>Se actualizarán</th><td>{{ reporte.actualizadas|length }}</td><td>{{ reporte.actualizadas|join:", " }}</td></tr>
+        <tr><th>Requerirán reverificación</th><td>{{ reporte.reverificar|length }}</td><td>{{ reporte.reverificar|join:", " }}</td></tr>
+        <tr><th>Sin cambios</th><td>{{ reporte.sin_cambios|length }}</td><td></td></tr>
+        <tr><th>En la base pero no en este archivo (no se tocan)</th><td>{{ reporte.no_presentes|length }}</td><td>{{ reporte.no_presentes|join:", " }}</td></tr>
+      </table>
+      <form method="post" style="margin-top:1em">
+        {% csrf_token %}
+        <input type="hidden" name="accion" value="confirmar">
+        <input type="hidden" name="id" value="{{ id_pendiente }}">
+        <input type="submit" class="default" value="Confirmar importación">
+      </form>
+    {% endif %}
+    <hr style="margin:2em 0">
+  {% endif %}
+
+  <h2>Sincronizar desde la hoja</h2>
+  {% if hoja_configurada %}
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="accion" value="hoja">
+      <input type="submit" class="default" value="Sincronizar desde la hoja">
+    </form>
+  {% else %}
+    <p>La hoja no está configurada: falta la variable <code>HOJA_CSV_URL</code> con el link de
+    "Publicar en la web" en formato CSV (ver docs/DESARROLLO.md).</p>
+  {% endif %}
+
+  <h2 style="margin-top:2em">Subir un CSV (respaldo)</h2>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="hidden" name="accion" value="subir">
+    {{ form_subir.as_p }}
+    <input type="submit" value="Ver vista previa">
+  </form>
+</div>
+{% endblock %}

@@ -64,6 +64,7 @@ CI (GitHub Actions) ejecuta además las pruebas en PostgreSQL 16, el chequeo de 
 | `ALLOWED_HOSTS` | no se usa | dominios extra; Render agrega el suyo solo |
 | `CSRF_TRUSTED_ORIGINS` | no se usa | `https://` + dominios extra |
 | `ADMIN_URL` | `admin/` | **obligatoria**, ruta no obvia (no se acepta `admin/`) |
+| `HOJA_CSV_URL` | opcional | link de la hoja publicada como CSV (ver "Contenido") |
 
 Producción **nunca** lee `.env`.
 
@@ -103,6 +104,33 @@ uv run python manage.py createsuperuser
 ```
 
 Usa una contraseña fuerte. Cierra la terminal al terminar para no dejar esas variables cargadas. Las migraciones las aplica el propio servicio al arrancar, así que hazlo **después** del primer despliegue.
+
+## Contenido: hoja → admin
+
+### Preparar la hoja (una sola vez)
+
+1. Crea una Google Sheet con una cuenta Gmail del equipo (algunas cuentas universitarias no permiten "Publicar en la web").
+2. Archivo → Importar → sube `datos/plantilla_convocatorias.csv` → "Reemplazar hoja actual". Borra las filas `EJEMPLO-1` y `EJEMPLO-2` cuando cargues convocatorias reales.
+3. Validación de datos (Datos → Validación de datos) en la columna `tipo` (beca, practicas, intercambio, doble_grado, concurso, taller, voluntariado) y en `frecuencia` (unica, anual, recurrente).
+4. Para notas internas usa **otra pestaña**: la de convocatorias será pública para quien tenga el link.
+5. **Publicar:** Archivo → Compartir → Publicar en la web → elige **solo la pestaña de convocatorias** y el formato **Valores separados por comas (.csv)** → Publicar. En "Contenido publicado y configuración", **activa "Volver a publicar automáticamente cuando se realicen cambios"**.
+6. Copia el link (empieza con `https://docs.google.com/spreadsheets/d/e/` y termina en `output=csv`) y cárgalo en Render como variable `HOJA_CSV_URL` (Environment → Add Environment Variable). Render redespliega solo.
+
+### Flujo diario
+
+1. Edita la hoja siguiendo `docs/reglas-etiquetado.md`.
+2. En el admin: Oportunidades → **Importar / sincronizar** → **Sincronizar desde la hoja**.
+3. Revisa la vista previa. Si hay errores, corrígelos en la hoja y vuelve a sincronizar. Si no ves un cambio reciente, espera 5 minutos (Google tarda en actualizar el CSV publicado).
+4. **Confirmar importación.** Las nuevas entran como borrador.
+5. En la lista, selecciona las que revisaste → acción **Marcar como verificada ahora** → luego **Publicar**.
+
+Volver a sincronizar nunca despublica. Pero si cambias la fecha de cierre, la hora o un link, esa convocatoria vuelve a borrador y hay que verificarla de nuevo.
+
+**Respaldo:** si la sincronización falla, Archivo → Descargar → CSV y usa **Subir un CSV** en la misma pantalla. Desde la terminal: `uv run python manage.py importar_convocatorias archivo.csv --dry-run` (o `--hoja`).
+
+### Usuario para la persona de contenido
+
+En el admin (con un superusuario): Usuarios → Agregar usuario → marca **Es staff** y agrégalo al grupo **Contenido**. No le marques "Es superusuario". Ese grupo puede ver, crear y editar convocatorias, carreras e intereses, pero no borrar ni gestionar usuarios.
 
 ## Estructura
 
